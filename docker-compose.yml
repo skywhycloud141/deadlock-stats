@@ -1,0 +1,9 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: deadlock
+      POSTGRES_PASSWORD: adshjkadfs
+      POSTGRES_DB: deadlock
+    ports:
+      - "5432:5432"
