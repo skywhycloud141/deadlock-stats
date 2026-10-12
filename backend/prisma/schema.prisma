@@ -11,6 +11,11 @@ datasource db {
   provider = "postgresql"
 }
 
+enum TeamType {
+  Amber
+  Sapphire
+}
+
 model Player {
   account_id Int                @id
   name       String
@@ -25,24 +30,24 @@ model Match {
 }
 
 model MatchParticipant {
-  id                   String  @id @default(uuid())
-  account_id           Int
-  match_id             Int
-  hero_id              Int
-  hero_lvl             Int
-  team                 Int
-  denies               Int
-  net_worth            Int
-  last_hits            Int
-  match_result         Int
-  duration             Int
-  kills                Int
-  deaths               Int
-  assists              Int
-  player_match_outcome Int
-  abandoned            Boolean
-  player               Player  @relation(fields: [account_id], references: [account_id])
-  match                Match   @relation(fields: [match_id], references: [match_id])
+  id           String   @id @default(uuid())
+  account_id   Int
+  match_id     Int
+  hero_id      Int
+  hero_lvl     Int
+  team         TeamType
+  denies       Int
+  net_worth    Int
+  last_hits    Int
+  match_result Int
+  duration     Int
+  kills        Int
+  deaths       Int
+  assists      Int
+  is_winner    Boolean
+  abandoned    Boolean
+  player       Player   @relation(fields: [account_id], references: [account_id])
+  match        Match    @relation(fields: [match_id], references: [match_id])
 
   @@unique([account_id, match_id])
 }
