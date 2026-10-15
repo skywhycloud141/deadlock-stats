@@ -39,8 +39,6 @@ model MatchParticipant {
   denies       Int
   net_worth    Int
   last_hits    Int
-  match_result Int
-  duration     Int
   kills        Int
   deaths       Int
   assists      Int
