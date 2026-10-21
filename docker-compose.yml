@@ -7,3 +7,9 @@ services:
       POSTGRES_DB: deadlock
     ports:
       - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    container_name: deadlock-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"

@@ -111,7 +111,12 @@ export class DeadlockService {
         matchId: savedMatch.match_id,
         newParticipantsSaved: savedParticipants.count,
       };
-    });
+    },
+    {
+      maxWait:5000,
+      timeout:10000
+    }
+  );
     return result;
   };
 }
