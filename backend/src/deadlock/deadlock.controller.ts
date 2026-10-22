@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
 import { DeadlockService } from './deadlock.service';
-import { Queue } from 'bullmq';
+import { Job, JobData, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { retry } from 'rxjs';
 
@@ -34,6 +34,22 @@ async syncBatch(@Body() body: { matchIds: number[] }) {
     })),
   );
   return addBulk
-}
+};
+    @Get("jobs/:jobId")
+    async jobStatus(@Param('jobId') jobId: string){
+        const job = await this.matchQueue.getJob(jobId);
+
+        if(!job) {
+            throw new NotFoundException(`Job not found`)
+        }
+
+        const status = await job.getState();
+
+        return{
+            jobId,
+            status,
+        };
+        
+    }
 
 }
