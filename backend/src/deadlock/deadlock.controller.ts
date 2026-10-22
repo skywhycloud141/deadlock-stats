@@ -1,7 +1,8 @@
-import { Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { DeadlockService } from './deadlock.service';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
+import { retry } from 'rxjs';
 
 @Controller('deadlock')
 export class DeadlockController {
@@ -19,9 +20,20 @@ export class DeadlockController {
         const job = await this.matchQueue.add("sync-match",{matchId})
         return {
             status:"success",
-            jobId:job.id,
+            jobId:"match - " + matchId,
             message:'Матч поставлен в очередь'
         }
 
     }
+   @Post('sync-batch')
+async syncBatch(@Body() body: { matchIds: number[] }) {
+  const addBulk = await this.matchQueue.addBulk(
+    body.matchIds.map((id) => ({
+      name: 'sync-match',
+      data: { matchId: id },
+    })),
+  );
+  return addBulk
+}
+
 }
