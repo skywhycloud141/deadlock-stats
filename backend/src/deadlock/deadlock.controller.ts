@@ -17,22 +17,35 @@ export class DeadlockController {
     @Post("sync/:id")
     async syncMatch(@Param("id") id:string){
         const matchId = Number(id);
-        const job = await this.matchQueue.add("sync-match",{matchId})
+        const job = await this.matchQueue.add(
+            "sync-match",
+            {matchId},
+        {
+            jobId:`match-${matchId}`,
+            attempts:3,
+            backoff:{
+                type:`exponential`,
+                delay:2000
+            }
+        })
         return {
             status:"success",
-            jobId:"match - " + matchId,
+            jobId:job.id,
             message:'Матч поставлен в очередь'
         }
 
     }
    @Post('sync-batch')
 async syncBatch(@Body() body: { matchIds: number[] }) {
+  
   const addBulk = await this.matchQueue.addBulk(
     body.matchIds.map((id) => ({
       name: 'sync-match',
       data: { matchId: id },
     })),
   );
+
+
   return addBulk
 };
     @Get("jobs/:jobId")
@@ -50,6 +63,16 @@ async syncBatch(@Body() body: { matchIds: number[] }) {
             status,
         };
         
-    }
+    };
+
+    @Get('players/:accountId/overview')
+    async getAccountOverview(@Param('accountId') accountId:string ) {
+        return this.deadlockService.getPlayerOverview(Number(accountId))
+    };
+
+    @Get('players/:accountId/heroes')
+    async getAccountHeroes(@Param('accountId') accountId:string ) {
+        return this.deadlockService.getPlayerHeroes(Number(accountId))
+    };
 
 }

@@ -12,8 +12,8 @@ datasource db {
 }
 
 enum TeamType {
-  Amber
-  Sapphire
+  HiddenKing  
+  Archmother
 }
 
 model Player {

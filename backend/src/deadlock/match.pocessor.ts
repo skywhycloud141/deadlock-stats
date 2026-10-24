@@ -2,7 +2,12 @@ import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job } from "bullmq";
 import { DeadlockService } from "./deadlock.service";
 
-@Processor('match-sync-queue')
+@Processor('match-sync-queue',{
+    limiter:{
+        max:3,
+        duration:1000
+    }
+})
 export class MatchProcessor extends WorkerHost {
     constructor(private deadlockService:DeadlockService){
         super();

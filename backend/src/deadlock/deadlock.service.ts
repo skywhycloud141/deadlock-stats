@@ -30,14 +30,14 @@ export class DeadlockService {
     }
 
     const winnerTeam: TeamType =
-      matchInfo.winning_team === 0 ? TeamType.Amber : TeamType.Sapphire;
+      matchInfo.winning_team === 0 ? TeamType.HiddenKing : TeamType.Archmother;
 
     const participants = matchInfo.players.map((player: any) => {
       const statsArray = player.stats || [];
       const finalStats = statsArray.length > 0 ? statsArray[statsArray.length - 1] : null;
 
       const playerTeam: TeamType =
-        player.team === 0 ? TeamType.Amber : TeamType.Sapphire;
+        player.team === 0 ? TeamType.HiddenKing : TeamType.Archmother;
 
       return {
         match_id: matchId,
@@ -119,4 +119,62 @@ export class DeadlockService {
   );
     return result;
   };
+  async getPlayerOverview(accountId: number) {
+  const stats = await this.prisma.matchParticipant.aggregate({
+    where: { account_id: accountId },
+    _count: { match_id: true },
+    _avg: {
+      kills: true,
+      deaths: true,
+      assists: true,
+      net_worth: true,
+      damage: true,
+    },
+    _max: {
+      kills: true,
+      damage: true,
+      net_worth: true,
+    },
+  });
+
+  const wins = await this.prisma.matchParticipant.count({
+    where: { account_id: accountId, is_winner: true },
+  });
+
+  const totalMatches = stats._count.match_id;
+  const winrate = totalMatches > 0 ? Math.round((wins / totalMatches) * 100) : 0;
+
+  return {
+    accountId,
+    totalMatches,
+    winrate: `${winrate}%`,
+    averages: stats._avg,
+    records: stats._max,
+  };
+}
+async getPlayerHeroes(accountId: number) {
+  const heroes = await this.prisma.matchParticipant.groupBy({
+    by: ['hero_id'],
+    where: { account_id: accountId },
+    _count: { match_id: true },
+    _avg: {
+      kills: true,
+      deaths: true,
+      assists: true,
+      net_worth: true,
+    },
+    orderBy: {
+      _count: { match_id: 'desc' }, // Самый популярный герой наверху
+    },
+  });
+
+  return heroes.map((h) => ({
+    heroId: h.hero_id,
+    matches: h._count.match_id,
+    avgKills: Number(h._avg.kills?.toFixed(1)),
+    avgDeaths: Number(h._avg.deaths?.toFixed(1)),
+    avgAssists: Number(h._avg.assists?.toFixed(1)),
+    avgSouls: Math.round(h._avg.net_worth ?? 0),
+  }));
+}
 }
