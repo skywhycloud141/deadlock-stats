@@ -186,6 +186,39 @@ async getPlayerHeroes(accountId: number) {
       ),
     }))
     .sort((a, b) => b.matches - a.matches);
+};
+async getPlayerTopItems(accountId: number) {
+  const participants = await this.prisma.matchParticipant.findMany({
+    where: { account_id: accountId },
+    select: { items: true },
+  });
+
+  const itemCounts = new Map<number, number>();
+
+  for (const participant of participants) {
+    if (!Array.isArray(participant.items)) continue;
+
+    for (const item of participant.items) {
+      if (
+        typeof item === 'object' &&
+        item !== null &&
+        'item_id' in item &&
+        typeof item.item_id === 'number'
+      ) {
+        const itemId = item.item_id;
+
+        itemCounts.set(
+          itemId,
+          (itemCounts.get(itemId) ?? 0) + 1,
+        );
+      }
+    }
+  }
+
+  return Array.from(itemCounts.entries())
+    .map(([itemId, purchases]) => ({ itemId, purchases }))
+    .sort((a, b) => b.purchases - a.purchases)
+    .slice(0, 5);
 }
 }
 

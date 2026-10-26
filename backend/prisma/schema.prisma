@@ -12,7 +12,7 @@ datasource db {
 }
 
 enum TeamType {
-  HiddenKing  
+  HiddenKing
   Archmother
 }
 
@@ -47,6 +47,7 @@ model MatchParticipant {
   damage     Int
   player     Player   @relation(fields: [account_id], references: [account_id])
   match      Match    @relation(fields: [match_id], references: [match_id])
+  items      Json
 
   @@unique([account_id, match_id])
 }
