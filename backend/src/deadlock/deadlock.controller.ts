@@ -3,10 +3,11 @@ import { DeadlockService } from './deadlock.service';
 import { Job, JobData, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { retry } from 'rxjs';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('deadlock')
 export class DeadlockController {
-    constructor(private deadlockService:DeadlockService,@InjectQueue('match-sync-queue') private matchQueue:Queue){}
+    constructor(private deadlockService:DeadlockService,private prisma:PrismaService,@InjectQueue('match-sync-queue') private matchQueue:Queue){}
     @Get(":id")
     async getMappedMatch(@Param("id") id:string){
         const matchId = Number(id);
@@ -74,5 +75,55 @@ async syncBatch(@Body() body: { matchIds: number[] }) {
     async getAccountHeroes(@Param('accountId') accountId:string ) {
         return this.deadlockService.getPlayerHeroes(Number(accountId))
     };
+    @Get('players/:accountId/matches')
+    async getPlayerMatches(
+  accountId: number,
+  page = 1,
+  limit = 10,
+) {
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(100, Math.max(1, limit));
 
+  const skip = (safePage - 1) * safeLimit;
+
+  const [matches, total] = await this.prisma.$transaction([
+    this.prisma.matchParticipant.findMany({
+      where: { account_id: accountId },
+      include: {
+        match: {
+          select: {
+            duration: true,
+          },
+        },
+      },
+      orderBy: {
+        match_id: 'desc',
+      },
+      skip,
+      take: safeLimit,
+    }),
+
+    this.prisma.matchParticipant.count({
+      where: { account_id: accountId },
+    }),
+  ]);
+
+  return {
+    data: matches.map((participant) => ({
+      matchId: participant.match_id,
+      heroId: participant.hero_id,
+      kills: participant.kills,
+      deaths: participant.deaths,
+      assists: participant.assists,
+      isWinner: participant.is_winner,
+      duration: participant.match.duration,
+    })),
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit),
+    },
+  };
+}
 }

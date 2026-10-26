@@ -153,28 +153,39 @@ export class DeadlockService {
   };
 }
 async getPlayerHeroes(accountId: number) {
-  const heroes = await this.prisma.matchParticipant.groupBy({
-    by: ['hero_id'],
+  const groups = await this.prisma.matchParticipant.groupBy({
+    by: ['hero_id', 'is_winner'],
     where: { account_id: accountId },
     _count: { match_id: true },
-    _avg: {
-      kills: true,
-      deaths: true,
-      assists: true,
-      net_worth: true,
-    },
-    orderBy: {
-      _count: { match_id: 'desc' }, // Самый популярный герой наверху
-    },
   });
 
-  return heroes.map((h) => ({
-    heroId: h.hero_id,
-    matches: h._count.match_id,
-    avgKills: Number(h._avg.kills?.toFixed(1)),
-    avgDeaths: Number(h._avg.deaths?.toFixed(1)),
-    avgAssists: Number(h._avg.assists?.toFixed(1)),
-    avgSouls: Math.round(h._avg.net_worth ?? 0),
-  }));
+  const heroes = new Map<number, { matches: number; wins: number }>();
+
+  for (const group of groups) {
+    const hero = heroes.get(group.hero_id) ?? {
+      matches: 0,
+      wins: 0,
+    };
+
+    hero.matches += group._count.match_id;
+
+    if (group.is_winner) {
+      hero.wins += group._count.match_id;
+    }
+
+    heroes.set(group.hero_id, hero);
+  }
+
+  return Array.from(heroes.entries())
+    .map(([heroId, stats]) => ({
+      heroId,
+      matches: stats.matches,
+      wins: stats.wins,
+      winrate: Number(
+        ((stats.wins / stats.matches) * 100).toFixed(1),
+      ),
+    }))
+    .sort((a, b) => b.matches - a.matches);
 }
 }
+
