@@ -7,10 +7,14 @@ import { BullModule } from '@nestjs/bullmq';
 import { MatchProcessor } from './match.pocessor';
 
 @Module({
-  providers: [DeadlockService,MatchProcessor],
-  imports:[HttpModule,PrismaModule,BullModule.registerQueue({
-    name:'match-sync-queue'
-  })],
-  controllers: [DeadlockController]
+  providers: [DeadlockService, MatchProcessor],
+  imports: [
+    HttpModule,
+    PrismaModule,
+    BullModule.registerQueue({
+      name: 'match-sync-queue',
+    }),
+  ],
+  controllers: [DeadlockController],
 })
 export class DeadlockModule {}

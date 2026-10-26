@@ -1,9 +1,4 @@
-
-import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 interface PlayerMatch {
   account_id: number;
@@ -29,12 +24,11 @@ export class AppService implements OnModuleInit {
   private readonly logger = new Logger(AppService.name);
 
   async onModuleInit(): Promise<void> {
-    const accountId = "76561199617480231";
-    const matchId = "113471271";
+    const accountId = '76561199617480231';
+    const matchId = '113471271';
 
     try {
-      const url =
-        `https://api.deadlock-api.com/v1/players/${accountId}/match-history`;
+      const url = `https://api.deadlock-api.com/v1/players/${accountId}/match-history`;
 
       const response = await fetch(url);
 
@@ -46,9 +40,7 @@ export class AppService implements OnModuleInit {
 
       const matches: PlayerMatch[] = await response.json();
 
-      const match = matches.find(
-        (item) => String(item.match_id) === matchId,
-      );
+      const match = matches.find((item) => String(item.match_id) === matchId);
 
       if (!match) {
         this.logger.warn(
