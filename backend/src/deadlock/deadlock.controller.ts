@@ -74,6 +74,8 @@ export class DeadlockController {
     return {
       jobId,
       status,
+      failedReason: job.failedReason || null,
+      attemptsMade: job.attemptsMade,
     };
   }
 

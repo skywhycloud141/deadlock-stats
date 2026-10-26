@@ -12,18 +12,25 @@ export class DeadlockService {
     private prisma: PrismaService,
   ) {}
   async getMatchMetadata(matchId: number) {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(`${this.baseUrl}/matches/${matchId}/metadata`, {
-          params: {
-            disable_steam: true,
-          },
-        }),
-      );
-      return response.data;
-    } catch (error) {
-      console.error(error);
+    if (!Number.isSafeInteger(matchId) || matchId <= 0) {
+      throw new BadRequestException(`Invalid match id: ${matchId}`);
     }
+
+    // Let Axios errors reach BullMQ so it can mark/retry the job correctly.
+    // Returning undefined here made the later mapper fail with a misleading error.
+    const response = await firstValueFrom(
+      this.httpService.get(`${this.baseUrl}/matches/${matchId}/metadata`, {
+        params: { disable_steam: true },
+      }),
+    );
+
+    if (!response.data || typeof response.data !== 'object') {
+      throw new BadRequestException(
+        `Match metadata response is empty or invalid for match ${matchId}`,
+      );
+    }
+
+    return response.data;
   }
   mapMatchToParticipants(matchId: number, rawData: any) {
     const matchInfo = rawData?.match_info;
@@ -60,6 +67,8 @@ export class DeadlockService {
         damage: finalStats?.player_damage ?? 0,
         is_winner: playerTeam === winnerTeam,
         abandoned: (player.abandon_match_time_s ?? 0) > 0,
+        // `items` is a required Json column; older or partial API payloads may omit it.
+        items: Array.isArray(player.items) ? player.items : [],
       };
     });
 
