@@ -1,16 +1,84 @@
 import { HttpService } from '@nestjs/axios';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { TeamType } from '@prisma/client';
-import { firstValueFrom } from 'rxjs';
+import { concatAll, firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
+import 'dotenv/config';
+import Redis from 'ioredis';
+import { GoogleGenAI, Type } from '@google/genai';
 
 @Injectable()
 export class DeadlockService {
   private baseUrl = 'https://api.deadlock-api.com/v1';
+  private redis = new Redis({
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT)
+  });
+  private ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  })
   constructor(
     private httpService: HttpService,
     private prisma: PrismaService,
   ) {}
+  async getPlayerCoachAdvice(account_id: number){
+    const cacheKey = `coach:advice:${account_id}`;
+    const cachedAdvice = await this.redis.get(cacheKey);
+    if(cachedAdvice){
+      return {
+        account_id,
+        fromCache: true,
+        coachReport: JSON.parse(cachedAdvice)
+      }
+    } 
+    const [overview, heroes, fbi] = await Promise.all([
+      this.getPlayerOverview(account_id),
+      this.getPlayerHeroes(account_id),
+      this.getPlayerFbiReport(account_id)
+    ])
+    if(overview.totalMatches === 0){
+      throw new BadRequestException(`Нет сохраненных матчей для анализа`);
+    }
+    const playerContext = `
+    Статистика игрока Deadlock (ID: ${account_id}) за ${overview.totalMatches} матчей:
+    - Винрейт: ${overview.winrate}
+    - Средний KDA: ${Number(overview.averages.kills).toFixed(1)} / ${Number(overview.averages.deaths).toFixed(1)} / ${Number(overview.averages.assists).toFixed(1)}
+    - Средний фарм душ (Net Worth): ${Math.round(overview.averages.net_worth ?? 0)}
+    - Средний урон: ${Math.round(overview.averages.damage ?? 0)}
+    - Индекс порядочности (FBI): ${fbi.trustScore}/100 (${fbi.verdict}), доля фида: ${fbi.metrics?.feedPercentage}
+    - Топ-3 героя: ${JSON.stringify(heroes.slice(0, 3))}
+  `;
+
+  const response = await this.ai.models.generateContent({
+    model: 'gemini-3.5-flash-lite',
+    contents: playerContext,
+    config: {
+      systemInstruction:
+        'Ты — киберспортивный тренер по Deadlock. Проанализируй цифры игрока и дай конкретные советы без воды на русском языке.',
+      temperature: 0.7,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          playstyle: { type: Type.STRING },
+          strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+          weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+          actionableTips: { type: Type.ARRAY, items: { type: Type.STRING } },
+        },
+        required: ['playstyle', 'strengths', 'weaknesses', 'actionableTips'],
+      },
+    },
+  });
+
+  const aiJsonString = response.text || '{}';
+  await this.redis.set(cacheKey, aiJsonString, 'EX', 6*60*60)
+  return {
+    account_id,
+    fromCache: false,
+    coachReport: JSON.parse(aiJsonString)
+  }
+
+  }
   async getMatchMetadata(matchId: number) {
     if (!Number.isSafeInteger(matchId) || matchId <= 0) {
       throw new BadRequestException(`Invalid match id: ${matchId}`);

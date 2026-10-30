@@ -139,4 +139,8 @@ export class DeadlockController {
   async getFbiReport(@Param("accountId") accountId:string) {
     return this.deadlockService.getPlayerFbiReport(Number(accountId))
   }
+  @Get('players/:accountId/coach') 
+  async getPlayerCoach(@Param('accountId') accountId:string){
+    return this.deadlockService.getPlayerCoachAdvice(Number(accountId))
+  }
 }
