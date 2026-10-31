@@ -9,7 +9,7 @@ import {
 import { DeadlockService } from './deadlock.service';
 import { Job, JobData, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
-import { retry } from 'rxjs';
+import { retry, throttleTime } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('deadlock')
@@ -142,5 +142,9 @@ export class DeadlockController {
   @Get('players/:accountId/coach') 
   async getPlayerCoach(@Param('accountId') accountId:string){
     return this.deadlockService.getPlayerCoachAdvice(Number(accountId))
+  }
+  @Get('players/:accountId/teammates')
+  async getBestTeammates(@Param(`accountId`) accountId:string){
+    return this.deadlockService.getBestTeammates(Number(accountId))
   }
 }

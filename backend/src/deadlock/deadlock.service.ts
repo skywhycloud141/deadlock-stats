@@ -193,7 +193,12 @@ export class DeadlockService {
           data: participants,
           skipDuplicates: true, // Защита от дублей по @@unique([account_id, match_id])
         });
-
+        // Инвалидация кэша
+        const cacheKeysToDelete = participants.map((p:any) => `coach:advice:${p.account_id}`
+        )
+        if(cacheKeysToDelete.length > 0){
+          await this.redis.del(...cacheKeysToDelete)
+        }
         return {
           matchId: savedMatch.match_id,
           newParticipantsSaved: savedParticipants.count,
@@ -355,5 +360,66 @@ export class DeadlockService {
         avgKdaRatio:Number((totalKillsAndAssists/Math.max(1,totalDeaths)).toFixed(2))
       }
     }
+  }
+  async getBestTeammates(account_id:number){
+    const myParticipants = await this.prisma.matchParticipant.findMany({
+      where:{account_id:account_id},
+      select:{match_id:true,team:true,is_winner:true}
+    });
+    if (myParticipants.length === 0) {
+      return []
+    }
+    const matchIds = myParticipants.map((m) => m.match_id);
+    const allParticipantsInMatches = await this.prisma.matchParticipant.findMany({
+      where:{
+        match_id:{in:matchIds},
+        account_id:{not:account_id}
+      },
+      select:{
+        account_id:true,
+        match_id:true,
+        team:true,
+        is_winner:true,
+        kills:true,
+        deaths:true,
+        assists:true
+      }
+    });
+    const myTeamByMatch = new Map(
+      myParticipants.map((m) => [m.match_id,m.team])
+    );
+    const teammatesStats = new Map<number,{matches:number,wins:number,totalKills:number,totalDeaths:number,totalAssists:number}>();
+    for(const player of allParticipantsInMatches){
+      const myTeam = myTeamByMatch.get(player.match_id);
+      if(player.team !== myTeam){
+        continue
+      };
+      const current = teammatesStats.get(player.account_id) || {
+        matches:0,
+        wins:0,
+        totalKills:0,
+        totalDeaths:0,
+        totalAssists:0
+      };
+      current.matches += 1
+      if(player.is_winner){
+        current.wins += 1
+      }
+      current.totalKills += player.kills;
+      current.totalDeaths += player.deaths;
+      current.totalAssists += player.assists;
+
+      teammatesStats.set(player.account_id,current)
+    };
+    return Array.from(teammatesStats.entries()).map(([teammateId, stat]) => {
+      return{
+        teammateId,
+        sharedMatches:stat.matches,
+        wins: stat.wins,
+        avgKills:(stat.totalKills/stat.matches).toFixed(1),
+        avgDeaths:(stat.totalDeaths/stat.matches).toFixed(1),
+        avgAssists:(stat.totalAssists/stat.matches).toFixed(1)
+      }
+    }).sort((a, b) => b.sharedMatches - a.sharedMatches || b.wins-a.wins).slice(0,5);
   }
 }
