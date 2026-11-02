@@ -30,24 +30,26 @@ model Match {
 }
 
 model MatchParticipant {
-  id         String   @id @default(uuid())
-  account_id Int
-  match_id   Int
-  hero_id    Int
-  hero_lvl   Int
-  team       TeamType
-  denies     Int
-  net_worth  Int
-  last_hits  Int
-  kills      Int
-  deaths     Int
-  assists    Int
-  is_winner  Boolean
-  abandoned  Boolean
-  damage     Int
-  player     Player   @relation(fields: [account_id], references: [account_id])
-  match      Match    @relation(fields: [match_id], references: [match_id])
-  items      Json
+  id            String   @id @default(uuid())
+  account_id    Int
+  match_id      Int
+  hero_id       Int
+  hero_lvl      Int
+  team          TeamType
+  denies        Int
+  net_worth     Int
+  last_hits     Int
+  kills         Int
+  deaths        Int
+  assists       Int
+  is_winner     Boolean
+  abandoned     Boolean
+  damage        Int
+  player        Player   @relation(fields: [account_id], references: [account_id])
+  match         Match    @relation(fields: [match_id], references: [match_id])
+  items         Json
+  assigned_lane Int      @default(0)
+  souls_at_10m  Int      @default(0)
 
   @@unique([account_id, match_id])
 }

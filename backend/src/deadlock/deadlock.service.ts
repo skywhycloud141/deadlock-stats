@@ -7,6 +7,25 @@ import 'dotenv/config';
 import Redis from 'ioredis';
 import { GoogleGenAI, Type } from '@google/genai';
 
+type PlayerOverview = {
+  accountId: number;
+  totalMatches: number;
+  winrate: string;
+  averages: {
+    kills: number | null;
+    deaths: number | null;
+    assists: number | null;
+    net_worth: number | null;
+    souls_at_10m: number | null;
+    damage: number | null;
+  };
+  records: {
+    kills: number | null;
+    damage: number | null;
+    net_worth: number | null;
+  };
+};
+
 @Injectable()
 export class DeadlockService {
   private baseUrl = 'https://api.deadlock-api.com/v1';
@@ -22,7 +41,7 @@ export class DeadlockService {
     private prisma: PrismaService,
   ) {}
   async getPlayerCoachAdvice(account_id: number){
-    const cacheKey = `coach:advice:${account_id}`;
+    const cacheKey = `coach:advice:v2:${account_id}`;
     const cachedAdvice = await this.redis.get(cacheKey);
     if(cachedAdvice){
       return {
@@ -43,6 +62,7 @@ export class DeadlockService {
     Статистика игрока Deadlock (ID: ${account_id}) за ${overview.totalMatches} матчей:
     - Винрейт: ${overview.winrate}
     - Средний KDA: ${Number(overview.averages.kills).toFixed(1)} / ${Number(overview.averages.deaths).toFixed(1)} / ${Number(overview.averages.assists).toFixed(1)}
+    - Средний Net Worth к 10-й минуте (лайнинг-стадия): ${Math.round(overview.averages.souls_at_10m ?? 0)}
     - Средний фарм душ (Net Worth): ${Math.round(overview.averages.net_worth ?? 0)}
     - Средний урон: ${Math.round(overview.averages.damage ?? 0)}
     - Индекс порядочности (FBI): ${fbi.trustScore}/100 (${fbi.verdict}), доля фида: ${fbi.metrics?.feedPercentage}
@@ -54,7 +74,7 @@ export class DeadlockService {
     contents: playerContext,
     config: {
       systemInstruction:
-        'Ты — киберспортивный тренер по Deadlock. Проанализируй цифры игрока и дай конкретные советы без воды на русском языке.',
+        'Ты — киберспортивный тренер по Deadlock. Отдельно оцени лайнинг-стадию по среднему Net Worth к 10-й минуте и лейт-гейм по среднему итоговому Net Worth. Сравни ранний и поздний темп фарма, затем дай конкретные советы без воды на русском языке.',
       temperature: 0.7,
       responseMimeType: 'application/json',
       responseSchema: {
@@ -113,9 +133,28 @@ export class DeadlockService {
       matchInfo.winning_team === 0 ? TeamType.HiddenKing : TeamType.Archmother;
 
     const participants = matchInfo.players.map((player: any) => {
-      const statsArray = player.stats || [];
+      const statsArray = Array.isArray(player.stats) ? player.stats : [];
       const finalStats =
         statsArray.length > 0 ? statsArray[statsArray.length - 1] : null;
+      const isTimedStats = (
+        stat: unknown,
+      ): stat is { time_stamp_s: number; net_worth: number } =>
+        typeof stat === 'object' &&
+        stat !== null &&
+        'time_stamp_s' in stat &&
+        typeof stat.time_stamp_s === 'number' &&
+        'net_worth' in stat &&
+        typeof stat.net_worth === 'number';
+      const statsAtTenMinutes = statsArray
+        .filter(isTimedStats)
+        .sort(
+          (
+            a: { time_stamp_s: number; net_worth: number },
+            b: { time_stamp_s: number; net_worth: number },
+          ) =>
+            Math.abs(a.time_stamp_s - 600) - Math.abs(b.time_stamp_s - 600) ||
+            a.time_stamp_s - b.time_stamp_s,
+        )[0];
 
       const playerTeam: TeamType =
         player.team === 0 ? TeamType.HiddenKing : TeamType.Archmother;
@@ -137,6 +176,8 @@ export class DeadlockService {
         abandoned: (player.abandon_match_time_s ?? 0) > 0,
         // `items` is a required Json column; older or partial API payloads may omit it.
         items: Array.isArray(player.items) ? player.items : [],
+        assigned_lane: player.assigned_lane ?? 0,
+        souls_at_10m: statsAtTenMinutes?.net_worth ?? 0,
       };
     });
 
@@ -193,12 +234,6 @@ export class DeadlockService {
           data: participants,
           skipDuplicates: true, // Защита от дублей по @@unique([account_id, match_id])
         });
-        // Инвалидация кэша
-        const cacheKeysToDelete = participants.map((p:any) => `coach:advice:${p.account_id}`
-        )
-        if(cacheKeysToDelete.length > 0){
-          await this.redis.del(...cacheKeysToDelete)
-        }
         return {
           matchId: savedMatch.match_id,
           newParticipantsSaved: savedParticipants.count,
@@ -209,10 +244,23 @@ export class DeadlockService {
         timeout: 10000,
       },
     );
+    const cacheKeysToDelete = participants.flatMap((participant: { account_id: number }) => [
+      `coach:advice:v2:${participant.account_id}`,
+      `player:overview:${participant.account_id}`,
+    ]);
+    if (cacheKeysToDelete.length > 0) {
+      await this.redis.del(...cacheKeysToDelete);
+    }
     console.log(`РЕЗУЛЬТАТ ${result}`)
     return result;
   }
-  async getPlayerOverview(accountId: number) {
+  async getPlayerOverview(accountId: number): Promise<PlayerOverview> {
+    const cacheKey = `player:overview:${accountId}`;
+    const cachedOverview = await this.redis.get(cacheKey);
+    if (cachedOverview) {
+      return JSON.parse(cachedOverview) as PlayerOverview;
+    }
+
     const stats = await this.prisma.matchParticipant.aggregate({
       where: { account_id: accountId },
       _count: { match_id: true },
@@ -221,6 +269,7 @@ export class DeadlockService {
         deaths: true,
         assists: true,
         net_worth: true,
+        souls_at_10m: true,
         damage: true,
       },
       _max: {
@@ -238,13 +287,16 @@ export class DeadlockService {
     const winrate =
       totalMatches > 0 ? Math.round((wins / totalMatches) * 100) : 0;
 
-    return {
+    const overview: PlayerOverview = {
       accountId,
       totalMatches,
       winrate: `${winrate}%`,
       averages: stats._avg,
       records: stats._max,
     };
+
+    await this.redis.set(cacheKey, JSON.stringify(overview), 'EX', 1800);
+    return overview;
   }
   async getPlayerHeroes(accountId: number) {
     const groups = await this.prisma.matchParticipant.groupBy({
@@ -278,6 +330,51 @@ export class DeadlockService {
         winrate: Number(((stats.wins / stats.matches) * 100).toFixed(1)),
       }))
       .sort((a, b) => b.matches - a.matches);
+  }
+  async getLaneStats(accountId: number) {
+    const groups = await this.prisma.matchParticipant.groupBy({
+      //Обязателен ли is_winner?
+      by: ['assigned_lane', 'is_winner'],
+      where: { account_id: accountId },
+      _count: { match_id: true },
+      _sum: { net_worth: true },
+    });
+
+    const lanes = new Map<
+      number,
+      { matches: number; wins: number; netWorthTotal: number }
+    >();
+
+    for (const group of groups) {
+      const lane = lanes.get(group.assigned_lane) ?? {
+        matches: 0,
+        wins: 0,
+        netWorthTotal: 0,
+      };
+
+      lane.matches += group._count.match_id;
+      lane.netWorthTotal += group._sum.net_worth ?? 0;
+      if (group.is_winner) {
+        lane.wins += group._count.match_id;
+      }
+      lanes.set(group.assigned_lane, lane);
+    }
+
+    const laneStats = Array.from(lanes.entries())
+      .map(([assignedLane, stats]) => ({
+        assignedLane,
+        matches: stats.matches,
+        wins: stats.wins,
+        winrate: Number(((stats.wins / stats.matches) * 100).toFixed(1)),
+        averageNetWorth: Math.round(stats.netWorthTotal / stats.matches),
+      }))
+      .sort((a, b) => b.winrate - a.winrate || b.matches - a.matches);
+
+    return {
+      accountId,
+      bestLane: laneStats[0] ?? null,
+      lanes: laneStats,
+    };
   }
   async getPlayerTopItems(accountId: number) {
     const participants = await this.prisma.matchParticipant.findMany({
