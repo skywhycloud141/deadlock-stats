@@ -1,6 +1,12 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { TeamType } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { PatchChangeType, TeamType } from '@prisma/client';
+import { load } from 'cheerio';
 import { concatAll, firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 import 'dotenv/config';
@@ -28,7 +34,9 @@ type PlayerOverview = {
 
 @Injectable()
 export class DeadlockService {
+  private readonly logger = new Logger(DeadlockService.name);
   private baseUrl = 'https://api.deadlock-api.com/v1';
+  private readonly patchesBaseUrl = 'https://api.deadlock-api.com/v2';
   private redis = new Redis({
     host: process.env.REDIS_HOST,
     port: Number(process.env.REDIS_PORT)
@@ -120,6 +128,7 @@ export class DeadlockService {
 
     return response.data;
   }
+
   mapMatchToParticipants(matchId: number, rawData: any) {
     const matchInfo = rawData?.match_info;
 
@@ -519,4 +528,443 @@ export class DeadlockService {
       }
     }).sort((a, b) => b.sharedMatches - a.sharedMatches || b.wins-a.wins).slice(0,5);
   }
+
+
+  async syncPatches() {
+    let feedData: unknown;
+    let heroData: unknown;
+    let itemData: unknown;
+
+    try {
+      const [feedResponse, heroResponse, itemResponse] = await Promise.all([
+        firstValueFrom(
+          this.httpService.get<unknown>(`${this.patchesBaseUrl}/patches`),
+        ),
+        firstValueFrom(
+          this.httpService.get<unknown>(`${this.baseUrl}/assets/heroes`),
+        ),
+        firstValueFrom(
+          this.httpService.get<unknown>(`${this.baseUrl}/assets/items`),
+        ),
+      ]);
+      feedData = feedResponse.data;
+      heroData = heroResponse.data;
+      itemData = itemResponse.data;
+    } catch (error: unknown) {
+      this.logger.error(
+        'Failed to fetch patch notes or game assets from Deadlock API',
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new ServiceUnavailableException(
+        'Deadlock API is temporarily unavailable',
+      );
+    }
+
+    if (
+      !Array.isArray(feedData) ||
+      !Array.isArray(heroData) ||
+      !Array.isArray(itemData)
+    ) {
+      throw new ServiceUnavailableException(
+        'Deadlock API returned an invalid patches or assets response',
+      );
+    }
+
+    const feed = feedData.map(parsePatchFeedItem);
+    const heroes = heroData.map(parseHeroAsset);
+    const items = itemData.map(parseItemAsset);
+
+    if (
+      feed.some((patch) => patch === null) ||
+      heroes.some((hero) => hero === null) ||
+      items.some((item) => item === null)
+    ) {
+      throw new ServiceUnavailableException(
+        'Deadlock API returned an entry with an invalid shape',
+      );
+    }
+
+    const validFeed = feed.filter((patch): patch is PatchFeedItem => patch !== null);
+    const validHeroes = heroes.filter((hero): hero is HeroAsset => hero !== null);
+    const validItems = items.filter((item): item is ItemAsset => item !== null);
+
+    if (validFeed.length === 0) {
+      throw new ServiceUnavailableException(
+        'Deadlock API returned no valid patch notes',
+      );
+    }
+
+    if (validHeroes.length > 0) {
+      await this.prisma.hero.createMany({
+        data: validHeroes.map((hero) => ({
+          id: hero.id,
+          name: hero.name,
+          icon_url: hero.iconUrl,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    if (validItems.length > 0) {
+      await this.prisma.item.createMany({
+        data: validItems.map((item) => ({
+          id: item.id,
+          name: item.name,
+          icon_url: item.iconUrl,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    let changesStored = 0;
+    for (const feedItem of validFeed) {
+      const publishedAt = new Date(feedItem.pub_date);
+      let patchUrl: string;
+      try {
+        patchUrl = new URL(feedItem.link).toString();
+      } catch {
+        this.logger.warn(`Skipping patch with invalid URL: ${feedItem.title}`);
+        continue;
+      }
+
+      if (Number.isNaN(publishedAt.getTime())) {
+        this.logger.warn(`Skipping patch with invalid date: ${feedItem.title}`);
+        continue;
+      }
+
+      const patch = await this.prisma.patch.upsert({
+        where: { url: patchUrl },
+        create: {
+          source: feedItem.source,
+          title: feedItem.title,
+          publishedAt,
+          url: patchUrl,
+          contentHtml: feedItem.content,
+        },
+        update: {
+          source: feedItem.source,
+          title: feedItem.title,
+          publishedAt,
+          contentHtml: feedItem.content,
+        },
+      });
+
+      const parsedContent = await this.parsePatchContent(
+        feedItem.content,
+        patch.id,
+      );
+      changesStored += parsedContent.changesCount;
+    }
+
+    this.logger.log(
+      `Synced ${validFeed.length} patch notes and stored ${changesStored} changes`,
+    );
+
+    return {
+      patchNotesReceived: validFeed.length,
+      heroesAvailable: validHeroes.length,
+      itemsAvailable: validItems.length,
+      changesStored,
+    };
+  }
+
+  async parsePatchContent(content: string, patchId: string) {
+    if (content.trim().length === 0) {
+      throw new BadRequestException('Patch content must not be empty');
+    }
+
+    if (patchId.trim().length === 0) {
+      throw new BadRequestException('Patch ID must not be empty');
+    }
+
+    const [heroes, items] = await Promise.all([
+      this.prisma.hero.findMany({ select: { id: true, name: true } }),
+      this.prisma.item.findMany({ select: { id: true, name: true } }),
+    ]);
+
+    const heroLookup = new Map(
+      heroes.map((hero) => [normalizeAssetName(hero.name), hero.id]),
+    );
+    const itemLookup = new Map(
+      items.map((item) => [normalizeAssetName(item.name), item.id]),
+    );
+    const changes = this.extractPatchChanges(content, heroLookup, itemLookup);
+
+    return this.prisma.$transaction(async (transaction) => {
+      const patch = await transaction.patch.update({
+        where: { id: patchId },
+        data: { contentHtml: content },
+      });
+
+      await transaction.patchChange.deleteMany({ where: { patchId } });
+      if (changes.length > 0) {
+        await transaction.patchChange.createMany({
+          data: changes.map((change) => ({ ...change, patchId })),
+        });
+      }
+
+      return { patchId: patch.id, changesCount: changes.length };
+    });
+  }
+
+  private extractPatchChanges(
+    content: string,
+    heroLookup: Map<string, number>,
+    itemLookup: Map<string, bigint>,
+  ): PatchChangeDraft[] {
+    const $ = load(content);
+    $('script, style, noscript, img').remove();
+    $('br').replaceWith('\n');
+    $('li').each((_, element) => {
+      $(element).prepend('- ');
+    });
+    $('p, div, li, h1, h2, h3, h4').each((_, element) => {
+      $(element).append('\n');
+    });
+
+    const lines = $.root()
+      .text()
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter((line) => line.length > 0);
+
+    const changes: PatchChangeDraft[] = [];
+    let currentType: PatchChangeType = PatchChangeType.GENERAL;
+    let currentHeroId: number | undefined;
+    let currentItemId: bigint | undefined;
+    let currentSection = 'General';
+
+    for (const line of lines) {
+      const isBullet = /^[-•*]\s*/.test(line);
+      const text = line.replace(/^[-•*]\s*/, '').trim();
+      const sectionLabel = normalizeAssetName(text.replace(/[:：]\s*$/, ''));
+
+      if (sectionLabel === 'general' || sectionLabel === 'gameplay update') {
+        currentType = PatchChangeType.GENERAL;
+        currentHeroId = undefined;
+        currentItemId = undefined;
+        currentSection = text.replace(/[:：]\s*$/, '');
+        continue;
+      }
+
+      if (sectionLabel === 'heroes') {
+        currentType = PatchChangeType.HERO;
+        currentHeroId = undefined;
+        currentItemId = undefined;
+        currentSection = 'Heroes';
+        continue;
+      }
+
+      if (sectionLabel === 'items') {
+        currentType = PatchChangeType.ITEM;
+        currentHeroId = undefined;
+        currentItemId = undefined;
+        currentSection = 'Items';
+        continue;
+      }
+
+      const exactHeroId = heroLookup.get(sectionLabel);
+      if (exactHeroId !== undefined) {
+        currentType = PatchChangeType.HERO;
+        currentHeroId = exactHeroId;
+        currentItemId = undefined;
+        currentSection = text.replace(/[:：]\s*$/, '');
+        continue;
+      }
+
+      const exactItemId = itemLookup.get(sectionLabel);
+      if (exactItemId !== undefined) {
+        currentType = PatchChangeType.ITEM;
+        currentItemId = exactItemId;
+        currentHeroId = undefined;
+        currentSection = text.replace(/[:：]\s*$/, '');
+        continue;
+      }
+
+      let changeText = text;
+      const separatorIndex = text.indexOf(':');
+      if (separatorIndex > 0) {
+        const label = normalizeAssetName(text.slice(0, separatorIndex));
+        const heroId = heroLookup.get(label);
+        const itemId = itemLookup.get(label);
+
+        if (heroId !== undefined) {
+          currentType = PatchChangeType.HERO;
+          currentHeroId = heroId;
+          currentItemId = undefined;
+          currentSection = text.slice(0, separatorIndex).trim();
+          changeText = text.slice(separatorIndex + 1).trim();
+        } else if (itemId !== undefined) {
+          currentType = PatchChangeType.ITEM;
+          currentItemId = itemId;
+          currentHeroId = undefined;
+          currentSection = text.slice(0, separatorIndex).trim();
+          changeText = text.slice(separatorIndex + 1).trim();
+        }
+      }
+
+      if (!isBullet || changeText.length === 0) {
+        continue;
+      }
+
+      changes.push({
+        type: currentType,
+        changeText,
+        ...(currentHeroId === undefined ? {} : { heroId: currentHeroId }),
+        ...(currentItemId === undefined ? {} : { itemId: currentItemId }),
+        details: { section: currentSection },
+      });
+    }
+
+    return changes;
+  }
+
+  async getPatches(page = 1, limit = 20) {
+    const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(100, Math.max(1, Math.floor(limit)))
+      : 20;
+
+    const [patches, total] = await this.prisma.$transaction([
+      this.prisma.patch.findMany({
+        orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+        include: {
+          changes: {
+            orderBy: { id: 'asc' },
+            include: {
+              hero: { select: { id: true, name: true, icon_url: true } },
+              item: { select: { id: true, name: true, icon_url: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.patch.count(),
+    ]);
+
+    return {
+      data: patches.map((patch) => ({
+        ...patch,
+        changes: patch.changes.map((change) => ({
+          ...change,
+          itemId: change.itemId?.toString() ?? null,
+          item: change.item
+            ? {
+                ...change.item,
+                id: change.item.id.toString(),
+              }
+            : null,
+        })),
+      })),
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
+  }
+}
+
+type PatchFeedItem = {
+  source: 'forum' | 'steam';
+  title: string;
+  pub_date: string;
+  link: string;
+  content: string;
+};
+
+type HeroAsset = {
+  id: number;
+  name: string;
+  iconUrl: string | null;
+};
+
+type ItemAsset = {
+  id: bigint;
+  name: string;
+  iconUrl: string | null;
+};
+
+type PatchChangeDraft = {
+  type: PatchChangeType;
+  changeText: string;
+  heroId?: number;
+  itemId?: bigint;
+  details: { section: string };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parsePatchFeedItem(value: unknown): PatchFeedItem | null {
+  if (
+    !isRecord(value) ||
+    (value.source !== 'forum' && value.source !== 'steam') ||
+    typeof value.title !== 'string' ||
+    typeof value.pub_date !== 'string' ||
+    typeof value.link !== 'string' ||
+    typeof value.content !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    source: value.source,
+    title: value.title,
+    pub_date: value.pub_date,
+    link: value.link,
+    content: value.content,
+  };
+}
+
+function parseHeroAsset(value: unknown): HeroAsset | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'number' ||
+    !Number.isSafeInteger(value.id) ||
+    typeof value.name !== 'string'
+  ) {
+    return null;
+  }
+
+  const images = isRecord(value.images) ? value.images : {};
+  const iconUrl =
+    typeof images.icon_hero_card === 'string'
+      ? images.icon_hero_card
+      : typeof images.icon_image_small === 'string'
+        ? images.icon_image_small
+        : null;
+
+  return { id: value.id, name: value.name, iconUrl };
+}
+
+function parseItemAsset(value: unknown): ItemAsset | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'number' ||
+    !Number.isSafeInteger(value.id) ||
+    typeof value.name !== 'string'
+  ) {
+    return null;
+  }
+
+  const iconUrl =
+    typeof value.image === 'string'
+      ? value.image
+      : typeof value.image_webp === 'string'
+        ? value.image_webp
+        : null;
+
+  return { id: BigInt(value.id), name: value.name, iconUrl };
+}
+
+function normalizeAssetName(name: string): string {
+  return name
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }

@@ -53,3 +53,56 @@ model MatchParticipant {
 
   @@unique([account_id, match_id])
 }
+
+enum PatchChangeType {
+  GENERAL
+  HERO
+  ITEM
+}
+
+model Patch {
+  id          String        @id @default(uuid())
+  source      String
+  title       String
+  publishedAt DateTime
+  url         String        @unique
+  contentHtml String
+  changes     PatchChange[]
+
+  createdAt DateTime @default(now())
+  updated   DateTime @updatedAt
+
+  @@index([publishedAt])
+}
+
+model Hero {
+  id           Int           @id()
+  name         String
+  icon_url     String?
+  patchChanges PatchChange[]
+}
+
+model Item {
+  id           BigInt        @id
+  name         String
+  icon_url     String?
+  patchChanges PatchChange[]
+}
+
+model PatchChange {
+  id         String          @id @default(uuid())
+  patchId    String
+  type       PatchChangeType
+  changeText String
+  heroId     Int?
+  itemId     BigInt?
+  details    Json?
+
+  patch Patch @relation(fields: [patchId], references: [id], onDelete: Cascade)
+  hero  Hero? @relation(fields: [heroId], references: [id], onDelete: SetNull)
+  item  Item? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  @@index([patchId])
+  @@index([heroId])
+  @@index([itemId])
+}

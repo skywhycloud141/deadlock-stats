@@ -15,6 +15,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 import { Queue } from 'bullmq';
@@ -30,6 +31,65 @@ export class DeadlockController {
     private prisma: PrismaService,
     @InjectQueue('match-sync-queue') private matchQueue: Queue,
   ) {}
+
+  @Get('patches')
+  @ApiOperation({ summary: 'Получить сохранённые патчноуты Deadlock' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'От 1 до 100 записей' })
+  @ApiOkResponse({
+    description: 'Патчноуты с разобранными изменениями и данными героев/предметов',
+    schema: {
+      example: {
+        data: [
+          {
+            id: 'patch-id',
+            source: 'steam',
+            title: 'Gameplay Update',
+            publishedAt: '2026-11-05T12:00:00.000Z',
+            url: 'https://store.steampowered.com/news/app/1422450/view/example',
+            contentHtml: '<div>...</div>',
+            changes: [
+              {
+                id: 'change-id',
+                type: 'HERO',
+                changeText: 'Base damage increased',
+                heroId: 1,
+                itemId: null,
+                hero: { id: 1, name: 'Infernus', icon_url: null },
+                item: null,
+                details: { section: 'Infernus' },
+              },
+            ],
+          },
+        ],
+        pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+      },
+    },
+  })
+  async getPatches(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+  ) {
+    return this.deadlockService.getPatches(Number(page), Number(limit));
+  }
+
+  @Post('patches/sync')
+  @ApiOperation({ summary: 'Загрузить свежие патчноуты и изменения из Deadlock API' })
+  @ApiOkResponse({
+    description: 'Результат синхронизации патчей и игровых справочников',
+    schema: {
+      example: {
+        patchNotesReceived: 30,
+        heroesAvailable: 65,
+        itemsAvailable: 782,
+        changesStored: 240,
+      },
+    },
+  })
+  @ApiResponse({ status: 503, description: 'Deadlock API недоступен или вернул неверные данные' })
+  async syncPatches() {
+    return this.deadlockService.syncPatches();
+  }
 
   @Get(':id')
   @ApiOperation({ summary: 'Получить и преобразовать метаданные матча' })
