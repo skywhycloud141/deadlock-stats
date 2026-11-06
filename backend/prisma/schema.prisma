@@ -18,7 +18,8 @@ enum TeamType {
 
 model Player {
   account_id Int                @id
-  name       String
+  name       String?
+  avatar_url String?
   matches    MatchParticipant[]
 }
 

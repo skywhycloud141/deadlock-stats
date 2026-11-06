@@ -33,20 +33,20 @@ type PlayerOverview = {
 };
 
 @Injectable()
-export class DeadlockService {
+export class DeadlockService {  
   private readonly logger = new Logger(DeadlockService.name);
-  private baseUrl = 'https://api.deadlock-api.com/v1';
+  private readonly baseUrl = 'https://api.deadlock-api.com/v1';
   private readonly patchesBaseUrl = 'https://api.deadlock-api.com/v2';
-  private redis = new Redis({
+  private readonly redis = new Redis({
     host: process.env.REDIS_HOST,
     port: Number(process.env.REDIS_PORT)
   });
-  private ai = new GoogleGenAI({
+  private readonly ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
   })
   constructor(
-    private httpService: HttpService,
-    private prisma: PrismaService,
+    private readonly httpService: HttpService,
+    private readonly prisma: PrismaService,
   ) {}
   async getPlayerCoachAdvice(account_id: number){
     const cacheKey = `coach:advice:v2:${account_id}`;
@@ -209,7 +209,7 @@ export class DeadlockService {
       matchId,
       rawData,
     );
-
+    const profiles = await this.fetchSteamProfiles(participants.map((player:any) => player.account_id))
     // Шаг Б: Открываем интерактивную транзакцию
     const result = await this.prisma.$transaction(
       async (tx) => {
@@ -228,15 +228,29 @@ export class DeadlockService {
         });
 
         // 2. Создаем игроков в таблице Player (чтобы не упал Foreign Key)
-        const playersToInsert = participants.map((players: any) => ({
-          account_id: players.account_id,
-          name: `Player_${players.account_id}`, // Заглушка до интеграции со Steam API
-        }));
-
-        await tx.player.createMany({
-          data: playersToInsert,
-          skipDuplicates: true, // Если игрок уже есть в БД — просто пропускаем его без ошибки
+        const playersToInsert = participants.map((player: any) => {
+          const accountId = player.account_id;
+          const profile = profiles.get(accountId);
+            
+          return {
+            account_id: accountId,
+            name: profile?.name,
+            avatar_url:profile?.avatarUrl
+          }
         });
+
+        await Promise.all(
+          playersToInsert.map((player:any) =>
+            tx.player.upsert({
+              where: { account_id: player.account_id },
+              update: {
+                ...(player.name ? { name: player.name } : {}),
+                ...(player.avatar_url ? { avatar_url: player.avatar_url } : {}),
+              },
+              create: player,
+            }),
+          ),
+        );
 
         // 3. Сохраняем статистику всех 12 участников (Таблица MatchParticipant)
         const savedParticipants = await tx.matchParticipant.createMany({
@@ -864,6 +878,39 @@ export class DeadlockService {
         totalPages: Math.ceil(total / safeLimit),
       },
     };
+  }
+  async fetchSteamProfiles(account_ids:number[]) {
+    const apiKey = process.env.STEAM_API_KEY;
+    if(!apiKey || account_ids.length === 0){
+      return new Map();
+    };
+    const steamIds64 = account_ids.map((id) => (76561197960265728n+BigInt(id)).toString())
+    
+    try {
+      const url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/";
+      const response = await firstValueFrom(this.httpService.get(url,{
+        params:{
+          key:apiKey,
+          steamids: steamIds64.join(","),
+        }
+      }
+    ))
+    const players = response.data?.response?.players || []
+    const profileMap = new Map<number,{
+      name:string,
+      avatarUrl:string
+    }>()
+    for(const player of players){
+      const accountId = Number(BigInt(player.steamid) - 76561197960265728n)
+      profileMap.set(accountId,{
+        name:player.personaname,
+        avatarUrl:player.avatarfull
+      })
+    }
+    return profileMap;
+    } catch (error) {
+      return new Map();
+    }
   }
 }
 
