@@ -167,7 +167,7 @@ export class DeadlockService {
 
       const playerTeam: TeamType =
         player.team === 0 ? TeamType.HiddenKing : TeamType.Archmother;
-
+      const finalItems = Array.isArray(player.items) ? player.items.filter((item:any) => item.sold_time_s === 0 ).map((item:any) => item.item_id) : [];
       return {
         match_id: matchId,
         account_id: player.account_id,
@@ -184,7 +184,7 @@ export class DeadlockService {
         is_winner: playerTeam === winnerTeam,
         abandoned: (player.abandon_match_time_s ?? 0) > 0,
         // `items` is a required Json column; older or partial API payloads may omit it.
-        items: Array.isArray(player.items) ? player.items : [],
+        items:finalItems,
         assigned_lane: player.assigned_lane ?? 0,
         souls_at_10m: statsAtTenMinutes?.net_worth ?? 0,
       };
